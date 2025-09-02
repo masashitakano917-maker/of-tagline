@@ -7,8 +7,7 @@ import { Button } from "../components/ui/Button";
 const cn = (...a: (string | false | null | undefined)[]) => a.filter(Boolean).join(" ");
 const jaLen = (s: string) => Array.from(s || "").length;
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
-const parseWords = (src: string) =>
-  src.split(/[ ,、\s\n/]+/).map((s) => s.trim()).filter(Boolean);
+const parseWords = (src: string) => src.split(/[ ,、\s\n/]+/).map((s) => s.trim()).filter(Boolean);
 
 /** LCSベースの差分（挿入/変更部分を <mark> 赤表示） */
 function markDiffRed(original: string, improved: string) {
@@ -22,14 +21,13 @@ function markDiffRed(original: string, improved: string) {
   let i = 0, j = 0;
   while (i < n && j < m) {
     if (A[i] === B[j]) { out.push(B[j]); i++; j++; }
-    else if (dp[i + 1][j] >= dp[i][j + 1]) { i++; } // 削除は赤にしない
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { i++; }
     else { out.push(`<mark class="bg-red-50 text-red-600">${B[j++]}</mark>`); }
   }
   while (j < m) out.push(`<mark class="bg-red-50 text-red-600">${B[j++]}</mark>`);
   return out.join("");
 }
 
-type GitHubBlock = { ts: string; issueText: string; prDiff: string };
 type CheckStatus = "idle" | "running" | "done" | "error";
 
 /* ========= page ========= */
@@ -66,9 +64,6 @@ export default function Page() {
   // 追加要望
   const [requestNote, setRequestNote] = useState("");
 
-  // GitHub出力履歴
-  const [ghBlocks, setGhBlocks] = useState<GitHubBlock[]>([]);
-
   // 自動チェックのステータス
   const [checkStatus, setCheckStatus] = useState<CheckStatus>("idle");
 
@@ -85,7 +80,6 @@ export default function Page() {
     setDiff12Html(""); setDiff23Html("");
     setIssues2([]); setIssues3([]);
     setSummary2(""); setSummary3("");
-    setGhBlocks([]);
     setCheckStatus("idle");
 
     try {
@@ -106,7 +100,7 @@ export default function Page() {
       const generated = String(j?.text || "");
       setText1(generated);
 
-      // ② 自動チェック（生成直後に実行）
+      // ② 自動チェック
       await handleCheck(generated, /*suppressBusy*/ true);
     } catch (err: any) {
       setError(err?.message || "エラーが発生しました。");
@@ -116,7 +110,7 @@ export default function Page() {
     }
   }
 
-  /* ------------ チェック（text1を基準。baseText を渡せばそちらを使用） ------------ */
+  /* ------------ チェック ------------ */
   async function handleCheck(baseText?: string, suppressBusy = false) {
     try {
       const src = (baseText ?? text1).trim();
@@ -185,25 +179,6 @@ export default function Page() {
       setIssues3(issues);
       setSummary3(summary);
       setDiff23Html(markDiffRed(text2, improved));
-
-      // GitHub用カード
-      const oldSnip = text2.replace(/\s+/g, " ").slice(0, 160);
-      const newSnip = improved.replace(/\s+/g, " ").slice(0, 160);
-      const issueText = [
-        "## タスク: 修正要望の反映",
-        "### 要望",
-        requestNote,
-        "### 改善案サマリ",
-        summary || "（改善案の要約）",
-        `### 文字数: ${jaLen(improved)}（目標: ${minChars}〜${maxChars}）`,
-        "### チェックリスト",
-        "- [ ] 要望反映の本文を生成",
-        "- [ ] 禁止語/表記ゆれ/誤字の最終チェック",
-        `- [ ] 文字数レンジ(${minChars}〜${maxChars})内に調整`,
-      ].join("\n\n");
-      const prDiff = ["```diff", `- ${oldSnip}`, `+ ${newSnip}`, "```"].join("\n");
-      setGhBlocks(prev => [{ ts: new Date().toLocaleString("ja-JP"), issueText, prDiff }, ...prev]);
-
       setRequestNote("");
     } catch (err: any) {
       setError(err?.message || "エラーが発生しました。");
@@ -219,7 +194,6 @@ export default function Page() {
     setDiff12Html(""); setDiff23Html("");
     setIssues2([]); setIssues3([]);
     setSummary2(""); setSummary3("");
-    setGhBlocks([]);
     setRequestNote("");
     setError(null);
     setCheckStatus("idle");
@@ -290,7 +264,7 @@ export default function Page() {
 
               <div className="flex gap-3">
                 <Button type="submit" disabled={busy || !name || !url}>
-                  {busy && checkStatus !== "running" ? "処理中…" : "文章を生成（API）"}
+                  {busy && checkStatus !== "running" ? "処理中…" : "文章を生成"}
                 </Button>
                 <Button type="button" color="orange" onClick={handleReset}>リセット</Button>
               </div>
@@ -344,41 +318,6 @@ export default function Page() {
                 </Button>
               </div>
             </div>
-
-            {/* 要望反映（②→③の差分と要点） */}
-            {(issues3.length > 0 || diff23Html) && (
-              <div className="space-y-2 pt-2">
-                {issues3.length > 0 && (
-                  <ul className="text-sm list-disc pl-5 space-y-1">{issues3.map((it, i) => <li key={i}>{it}</li>)}</ul>
-                )}
-                {!!summary3 && <div className="text-xs text-neutral-500">要約: {summary3}</div>}
-                {!!diff23Html && (
-                  <div className="border rounded-lg p-3 text-sm leading-relaxed"
-                       dangerouslySetInnerHTML={{ __html: diff23Html }} />
-                )}
-              </div>
-            )}
-
-            {/* ▼ “改善案”の直下にGitHub用履歴カード */}
-            {ghBlocks.length > 0 && (
-              <section className="space-y-4 pt-3">
-                {ghBlocks.map((b, i) => (
-                  <div key={i} className="rounded-2xl border p-4 space-y-4">
-                    <div className="text-xs text-neutral-500">{b.ts}</div>
-                    <div className="space-y-2">
-                      <h3 className="font-semibold">GitHub Issue 文面</h3>
-                      <pre className="whitespace-pre-wrap text-sm bg-gray-50 rounded-xl p-3">{b.issueText}</pre>
-                      <div className="flex gap-2"><Button onClick={() => copy(b.issueText)}>コピー</Button></div>
-                    </div>
-                    <div className="space-y-2">
-                      <h3 className="font-semibold">PR 変更点（擬似diff）</h3>
-                      <pre className="overflow-x-auto text-sm bg-gray-50 rounded-xl p-3">{b.prDiff}</pre>
-                      <div className="flex gap-2"><Button color="orange" onClick={() => copy(b.prDiff)}>コピー</Button></div>
-                    </div>
-                  </div>
-                ))}
-              </section>
-            )}
           </section>
         </form>
 
@@ -431,7 +370,7 @@ export default function Page() {
 
           <div className="bg-white rounded-2xl shadow p-4">
             <div className="text-xs text-neutral-500 leading-relaxed">
-              ※ <code>/api/describe</code> が物件URLを解析して初回文（①）を生成。<code>/api/review</code> が条件順守をチェックし改善案を反映して（②）、追加要望を加味して（③）を返します。初回生成後は自動で②が実行されます。
+              ※ <code>/api/describe</code> が初回文（①）を生成。<code>/api/review</code> がチェック（②）と要望反映（③）を返します。初回生成後は自動で②が実行されます。
             </div>
           </div>
         </section>

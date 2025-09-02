@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
     let free: string[]   = Array.isArray(parsed?.free)   ? parsed.free   : [];
 
     // サニタイズ & 補完
-    const words = String(mustWords).split(/[ ,、\s/]+).map(s => s.trim()).filter(Boolean);
+    const words = String(mustWords).split(/[ ,、\s/]+/).map(s => s.trim()).filter(Boolean);
     const limit = (s: string) => (Array.from(s).length <= charLimit ? s : Array.from(s).slice(0, charLimit - 1).join("") + "…");
     const includeAll = (s: string) => words.every(w => !w || s.includes(w));
 

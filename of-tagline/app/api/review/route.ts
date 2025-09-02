@@ -1,28 +1,33 @@
 export const runtime = "nodejs";
 import OpenAI from "openai";
 
-/* ========== helpers ========== */
+/* ---------- helpers ---------- */
 const countJa = (s: string) => Array.from(s || "").length;
 
-/** string / string[] / その他 何でも受けて string[] に正規化 */
+function hardCapJa(s: string, max: number): string {
+  const arr = Array.from(s || "");
+  if (arr.length <= max) return s;
+  const upto = arr.slice(0, max);
+  const enders = new Set(["。", "！", "？", "."]);
+  let cut = -1;
+  for (let i = upto.length - 1; i >= 0; i--) {
+    if (enders.has(upto[i])) { cut = i + 1; break; }
+  }
+  return upto.slice(0, cut > 0 ? cut : max).join("").trim();
+}
+
 const normMustWords = (src: unknown): string[] => {
   const s: string = Array.isArray(src) ? (src as unknown[]).map(String).join(" ") : String(src ?? "");
-  return s
-    .split(/[ ,、\s\n/]+/)
-    .map((w) => w.trim())
-    .filter(Boolean);
+  return s.split(/[ ,、\s\n/]+/).map(w => w.trim()).filter(Boolean);
 };
 
-/** 金額表現などの最終サニタイズ（保険） */
 const stripPriceAndSpaces = (s: string) =>
   s
-    // 価格/金額/円/万円 などの明示を除去（半角/全角数字対応）
-    .replace(/(価格|金額|[\d０-９,，\.]+(?:万)?円)/g, "")
-    // 余分な空白を整形
+    .replace(/(価格|金額|[一二三四五六七八九十百千万億兆\d０-９,，\.]+(?:億|万)?円)/g, "")
     .replace(/\s{2,}/g, " ")
     .trim();
 
-/* ========== BAN（あなたのリストを維持） ========== */
+/* ---------- あなたのBAN（維持） ---------- */
 const BANNED = [
   "完全","完ぺき","絶対","万全","100％","フルリフォーム","理想","日本一","日本初","業界一","超","当社だけ","他に類を見ない",
   "抜群","一流","秀逸","羨望","屈指","特選","厳選","正統","由緒正しい","地域でナンバーワン","最高","最高級","極","特級","最新",
@@ -30,7 +35,7 @@ const BANNED = [
   "ディズニー","ユニバーサルスタジオ"
 ];
 
-/* ========== handler ========== */
+/* ---------- handler ---------- */
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -50,16 +55,16 @@ export async function POST(req: Request) {
 
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    // 「json」という語を含めた system（json_object 使用時の要件）
-    const systemPrompt =
+    // json_object 使用時の要件：「json」という語を含める
+    const system =
       'Return ONLY a json object like {"improved": string, "issues": string[], "summary": string}. (json)\n' +
       [
         "あなたは日本語の不動産コピーの校閲/編集者です。",
         `文字数は【厳守】${minChars}〜${maxChars}（全角）。`,
-        "価格/金額/円/万円などの金額表現は禁止。",
+        "価格/金額/円/万円・兆/億/万などの金額表現は禁止。",
         "電話番号・問い合わせ誘導・外部URLは書かない。",
         `禁止語：${BANNED.join("、")}`,
-        "自然で読みやすい不動産向け日本語に整えてください。",
+        "自然で読みやすい日本語に整えてください。",
       ].join("\n");
 
     const payload = {
@@ -85,7 +90,7 @@ export async function POST(req: Request) {
       temperature: 0.2,
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: systemPrompt },
+        { role: "system", content: system },
         { role: "user", content: JSON.stringify(payload) },
       ],
     });
@@ -95,19 +100,18 @@ export async function POST(req: Request) {
     let summary = "";
 
     try {
-      const p = JSON.parse(r1.choices?.[0]?.message?.content || "{}");
+      const raw = r1.choices?.[0]?.message?.content || "{}";
+      const p = JSON.parse(raw);
       improved = String(p?.improved ?? text);
       issues = Array.isArray(p?.issues) ? p.issues : [];
       summary = String(p?.summary ?? "");
     } catch {
-      // パース失敗時は元文をそのまま返す（下で再圧縮とサニタイズを実施）
-      improved = text;
+      improved = text; // パース失敗時は元文から続行
     }
 
-    // 価格表現の保険
     improved = stripPriceAndSpaces(improved);
 
-    // ② 文字数レンジ外は再圧縮して矯正
+    // ② レンジ外なら再圧縮して矯正
     const len = countJa(improved);
     if (len < minChars || len > maxChars) {
       const r2 = await openai.chat.completions.create({
@@ -120,18 +124,22 @@ export async function POST(req: Request) {
             content:
               'Output ONLY {"improved": string}. (json)\n' +
               `日本語で、文字数は【厳守】${minChars}〜${maxChars}（全角）。` +
-              `価格/金額/円/万円は禁止。禁止語：${BANNED.join("、")}`,
+              `価格・金額・円/万円/億は禁止。禁止語：${BANNED.join("、")}`,
           },
           { role: "user", content: JSON.stringify({ text: improved, request }) },
         ],
       });
       try {
-        const p2 = JSON.parse(r2.choices?.[0]?.message?.content || "{}");
+        const raw2 = r2.choices?.[0]?.message?.content || "{}";
+        const p2 = JSON.parse(raw2);
         improved = stripPriceAndSpaces(String(p2?.improved || improved));
       } catch {
         improved = stripPriceAndSpaces(improved);
       }
     }
+
+    // 最終ハード上限
+    if (countJa(improved) > maxChars) improved = hardCapJa(improved, maxChars);
 
     return new Response(
       JSON.stringify({

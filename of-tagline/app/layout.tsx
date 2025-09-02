@@ -1,3 +1,5 @@
+import './globals.css'
+
 export const metadata = {
   title: "マンション販促コピー・テスト",
   description: "外観＋間取りからキャッチコピー生成デモ",

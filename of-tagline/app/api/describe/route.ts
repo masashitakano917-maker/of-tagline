@@ -12,11 +12,13 @@ function htmlToText(html: string) {
     .trim();
 }
 const countJa = (s: string) => Array.from(s || "").length;
-const normMustWords = (src: string | string[]) =>
-  (Array.isArray(src) ? src : String(src))
+const normMustWords = (src: string | string[]): string[] => {
+  const s = Array.isArray(src) ? src.join(" ") : String(src); // ← まず必ず string に寄せる
+  return s
     .split(/[ ,、\s\n/]+/)
     .map((w) => w.trim())
     .filter(Boolean);
+};
 
 /* --- あなたのNGワード（維持） --- */
 const BANNED = [

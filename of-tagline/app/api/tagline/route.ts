@@ -3,7 +3,7 @@ import OpenAI from "openai";
 
 export const runtime = "nodejs";
 
-// CORS（必要なら有効）
+// --- CORS ---
 function cors(res: NextResponse) {
   res.headers.set("Access-Control-Allow-Origin", "*");
   res.headers.set("Access-Control-Allow-Methods", "POST,OPTIONS");
@@ -45,15 +45,15 @@ export async function POST(req: NextRequest) {
       "出力は次のJSONのみ: {\"strict\": string[], \"free\": string[]}",
     ].join("\n");
 
-    // Chat Completions（画像+テキスト）
-    const messages: any = [
+    // ✅ image_url は { url: string } 形式で渡す
+    const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       { role: "system", content: "You are a helpful Japanese real-estate copywriter. Return only JSON." },
       {
         role: "user",
         content: [
           { type: "text", text: prompt },
-          { type: "image_url", image_url: photoDataUrl },
-          ...(planDataUrl ? [{ type: "image_url", image_url: planDataUrl }] : []),
+          { type: "image_url", image_url: { url: String(photoDataUrl) } },
+          ...(planDataUrl ? [{ type: "image_url", image_url: { url: String(planDataUrl) } }] : []),
         ],
       },
     ];
@@ -62,7 +62,7 @@ export async function POST(req: NextRequest) {
       model: "gpt-4o-mini",
       messages,
       temperature: 0.9,
-      response_format: { type: "json_object" }, // TS的に安全
+      response_format: { type: "json_object" },
     });
 
     const content = completion.choices[0]?.message?.content || "{}";
@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
     let free: string[]   = Array.isArray(parsed?.free)   ? parsed.free   : [];
 
     // サニタイズ & 補完
-    const words = String(mustWords).split(/[ ,、\s/]+/).map(s => s.trim()).filter(Boolean);
+    const words = String(mustWords).split(/[\s、,\/]+/).map(s => s.trim()).filter(Boolean);
     const limit = (s: string) => (Array.from(s).length <= charLimit ? s : Array.from(s).slice(0, charLimit - 1).join("") + "…");
     const includeAll = (s: string) => words.every(w => !w || s.includes(w));
 

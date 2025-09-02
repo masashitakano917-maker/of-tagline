@@ -30,6 +30,7 @@ function markDiffRed(original: string, improved: string) {
 }
 
 type GitHubBlock = { ts: string; issueText: string; prDiff: string };
+type CheckStatus = "idle" | "running" | "done" | "error";
 
 /* ========= page ========= */
 export default function Page() {
@@ -65,21 +66,27 @@ export default function Page() {
   // 追加要望
   const [requestNote, setRequestNote] = useState("");
 
-  // GitHub出力履歴（“改善案”の下に積む）
+  // GitHub出力履歴
   const [ghBlocks, setGhBlocks] = useState<GitHubBlock[]>([]);
+
+  // 自動チェックのステータス
+  const [checkStatus, setCheckStatus] = useState<CheckStatus>("idle");
 
   const validUrl = (s: string) => /^https?:\/\/\S+/i.test(s.trim());
   const currentText = text3 || text2 || text1;
 
+  /* ------------ 生成（完了後に自動チェックを実行） ------------ */
   async function handleGenerate(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    // リセット（新しい流れを開始）
+
+    // 新しい流れを開始 → リセット
     setText1(""); setText2(""); setText3("");
     setDiff12Html(""); setDiff23Html("");
     setIssues2([]); setIssues3([]);
     setSummary2(""); setSummary3("");
     setGhBlocks([]);
+    setCheckStatus("idle");
 
     try {
       if (!name.trim()) throw new Error("物件名を入力してください。");
@@ -87,6 +94,8 @@ export default function Page() {
       if (minChars > maxChars) throw new Error("最小文字数は最大文字数以下にしてください。");
 
       setBusy(true);
+
+      // ① 初回生成
       const res = await fetch("/api/describe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -94,54 +103,65 @@ export default function Page() {
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j?.error || "生成に失敗しました。");
-      setText1(String(j?.text || ""));
+      const generated = String(j?.text || "");
+      setText1(generated);
+
+      // ② 自動チェック（生成直後に実行）
+      await handleCheck(generated, /*suppressBusy*/ true);
     } catch (err: any) {
       setError(err?.message || "エラーが発生しました。");
+      setCheckStatus("error");
     } finally {
       setBusy(false);
     }
   }
 
-  async function handleCheck() {
-    setError(null);
-    setIssues2([]); setSummary2(""); setDiff12Html("");
+  /* ------------ チェック（text1を基準。baseText を渡せばそちらを使用） ------------ */
+  async function handleCheck(baseText?: string, suppressBusy = false) {
     try {
-      if (!text1.trim()) throw new Error("まず①の文章を生成してください。");
+      const src = (baseText ?? text1).trim();
+      if (!src) throw new Error("まず①の文章を生成してください。");
+      if (!suppressBusy) setBusy(true);
 
-      setBusy(true);
+      setCheckStatus("running");
+      setIssues2([]); setSummary2(""); setDiff12Html("");
+
       const res = await fetch("/api/review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          text: text1,
+          text: src,
           name, url, mustWords: mustInput,
           minChars, maxChars,
-          request: "", // チェック時は空
+          request: "",
         }),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j?.error || "チェックに失敗しました。");
 
-      const improved = String(j?.improved ?? text1);
+      const improved = String(j?.improved ?? src);
       const issues = Array.isArray(j?.issues) ? j.issues : [];
       const summary = j?.summary || (issues.length ? issues.join(" / ") : "");
 
       setText2(improved);
       setIssues2(issues);
       setSummary2(summary);
-      setDiff12Html(markDiffRed(text1, improved));
+      setDiff12Html(markDiffRed(src, improved));
+      setCheckStatus("done");
     } catch (err: any) {
       setError(err?.message || "エラーが発生しました。");
+      setCheckStatus("error");
     } finally {
-      setBusy(false);
+      if (!suppressBusy) setBusy(false);
     }
   }
 
+  /* ------------ 追加要望の反映（②→③） ------------ */
   async function handleApplyRequest() {
     setError(null);
     setIssues3([]); setSummary3(""); setDiff23Html("");
     try {
-      if (!text2.trim()) throw new Error("まず②のチェックを実行してください。");
+      if (!text2.trim()) throw new Error("まず②のチェックを完了してください。");
       if (!requestNote.trim()) throw new Error("修正要望を入力してください。");
 
       setBusy(true);
@@ -166,7 +186,7 @@ export default function Page() {
       setSummary3(summary);
       setDiff23Html(markDiffRed(text2, improved));
 
-      // GitHub用カードを追加
+      // GitHub用カード
       const oldSnip = text2.replace(/\s+/g, " ").slice(0, 160);
       const newSnip = improved.replace(/\s+/g, " ").slice(0, 160);
       const issueText = [
@@ -202,9 +222,20 @@ export default function Page() {
     setGhBlocks([]);
     setRequestNote("");
     setError(null);
+    setCheckStatus("idle");
   }
 
   const copy = async (text: string) => { try { await navigator.clipboard.writeText(text); } catch {} };
+
+  /* ステータス表示の見た目 */
+  const statusLabel =
+    checkStatus === "running" ? "実行中…" :
+    checkStatus === "done"    ? "完了" :
+    checkStatus === "error"   ? "エラー" : "未実行";
+  const statusClass =
+    checkStatus === "running" ? "bg-yellow-100 text-yellow-700" :
+    checkStatus === "done"    ? "bg-emerald-100 text-emerald-700" :
+    checkStatus === "error"   ? "bg-red-100 text-red-700" : "bg-neutral-100 text-neutral-600";
 
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900">
@@ -259,7 +290,7 @@ export default function Page() {
 
               <div className="flex gap-3">
                 <Button type="submit" disabled={busy || !name || !url}>
-                  {busy ? "生成中…" : "文章を生成（API）"}
+                  {busy && checkStatus !== "running" ? "処理中…" : "文章を生成（API）"}
                 </Button>
                 <Button type="button" color="orange" onClick={handleReset}>リセット</Button>
               </div>
@@ -271,13 +302,20 @@ export default function Page() {
           <section className="bg-white rounded-2xl shadow p-4 space-y-3">
             <div className="text-sm font-medium">チェック &amp; 改善</div>
 
-            <div className="flex gap-3">
-              <Button type="button" onClick={handleCheck} disabled={busy || !text1}>
-                チェック
-              </Button>
-              <span className="text-xs text-neutral-500 self-center">
-                依頼条件の遵守／不自然表現／誤字脱字を点検し、改善案を反映します（変更箇所は赤字）。
-              </span>
+            {/* 1行：自動チェックのステータス＋再実行 */}
+            <div className="flex items-center justify-between rounded-xl border bg-neutral-50 px-3 py-2">
+              <div className="text-sm">自動チェック（初回生成後に自動実行）</div>
+              <div className="flex items-center gap-2">
+                <span className={cn("px-2 py-0.5 rounded-full text-xs", statusClass)}>{statusLabel}</span>
+                <Button
+                  type="button"
+                  onClick={() => handleCheck()}
+                  disabled={busy || !text1}
+                  className="px-3 py-1 text-xs"
+                >
+                  再実行
+                </Button>
+              </div>
             </div>
 
             {/* チェック結果（①→②の差分と要点） */}
@@ -318,7 +356,8 @@ export default function Page() {
                   <div className="border rounded-lg p-3 text-sm leading-relaxed"
                        dangerouslySetInnerHTML={{ __html: diff23Html }} />
                 )}
-            </div>)}
+              </div>
+            )}
 
             {/* ▼ “改善案”の直下にGitHub用履歴カード */}
             {ghBlocks.length > 0 && (
@@ -371,7 +410,7 @@ export default function Page() {
             </div>
             <div className="p-4 flex-1 overflow-auto">
               {text2 ? <p className="whitespace-pre-wrap leading-relaxed text-[15px]">{text2}</p>
-                     : <div className="text-neutral-500 text-sm">— まだチェック未実行 —</div>}
+                     : <div className="text-neutral-500 text-sm">— 自動チェック待ち／未実行 —</div>}
             </div>
           </div>
 
@@ -392,7 +431,7 @@ export default function Page() {
 
           <div className="bg-white rounded-2xl shadow p-4">
             <div className="text-xs text-neutral-500 leading-relaxed">
-              ※ <code>/api/describe</code> が物件URLを解析して初回文（①）を生成。<code>/api/review</code> が条件順守をチェックし改善案を反映して（②）、追加要望を加味して（③）を返します。
+              ※ <code>/api/describe</code> が物件URLを解析して初回文（①）を生成。<code>/api/review</code> が条件順守をチェックし改善案を反映して（②）、追加要望を加味して（③）を返します。初回生成後は自動で②が実行されます。
             </div>
           </div>
         </section>

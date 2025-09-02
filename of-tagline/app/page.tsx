@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
+import { Button } from "../components/ui/Button";
 
 /* ========= helpers ========= */
 const cn = (...a: (string | false | null | undefined)[]) => a.filter(Boolean).join(" ");
@@ -33,6 +34,8 @@ function markDiffRed(original: string, improved: string) {
   return out.join("");
 }
 
+type GitHubBlock = { ts: string; issueText: string; prDiff: string };
+
 /* ========= page component ========= */
 export default function Page() {
   // 入力
@@ -41,11 +44,6 @@ export default function Page() {
   const [mustInput, setMustInput] = useState("");
   const mustWords = useMemo(() => parseWords(mustInput), [mustInput]);
 
-  // トーン
-  const tones = ["プロフェッショナル", "フレンドリー", "ニュートラル"] as const;
-  type Tone = typeof tones[number];
-  const [tone, setTone] = useState<Tone>("プロフェッショナル");
-
   // 文字数
   const [minChars, setMinChars] = useState(450);
   const [maxChars, setMaxChars] = useState(550);
@@ -53,10 +51,12 @@ export default function Page() {
   // 出力＆状態
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [text, setText] = useState("");             // 生成結果
+  const [text, setText] = useState("");                   // 生成結果
   const [reviewIssues, setReviewIssues] = useState<string[]>([]);
   const [reviewHtml, setReviewHtml] = useState<string>(""); // 赤字差分HTML
   const [requestNote, setRequestNote] = useState("");       // 追加要望
+  const [improveSummary, setImproveSummary] = useState(""); // 改善案サマリ
+  const [ghBlocks, setGhBlocks] = useState<GitHubBlock[]>([]); // “改善案”の下に積む履歴
 
   const validUrl = (s: string) => /^https?:\/\/\S+/i.test(s.trim());
 
@@ -66,6 +66,8 @@ export default function Page() {
     setText("");
     setReviewIssues([]);
     setReviewHtml("");
+    setImproveSummary("");
+    setGhBlocks([]);
 
     try {
       if (!name.trim()) throw new Error("物件名を入力してください。");
@@ -79,8 +81,7 @@ export default function Page() {
         body: JSON.stringify({
           name,
           url,
-          mustWords: mustInput,
-          tone,
+          mustWords: mustInput, // サーバ側で分割
           minChars,
           maxChars,
         }),
@@ -112,7 +113,6 @@ export default function Page() {
           name,
           url,
           mustWords: mustInput,
-          tone,
           minChars,
           maxChars,
           request: "", // ここは空。次の「要望反映」で使う。
@@ -124,6 +124,9 @@ export default function Page() {
       const improved = String(j?.improved ?? text);
       const issues = Array.isArray(j?.issues) ? j.issues : [];
       setReviewIssues(issues);
+
+      // 改善サマリ（APIに summary がなければ issues を連結）
+      setImproveSummary(j?.summary || (issues.length ? issues.join(" / ") : ""));
 
       // 差分を赤で表示
       setReviewHtml(markDiffRed(text, improved));
@@ -150,7 +153,6 @@ export default function Page() {
           name,
           url,
           mustWords: mustInput,
-          tone,
           minChars,
           maxChars,
         }),
@@ -159,9 +161,39 @@ export default function Page() {
       if (!res.ok) throw new Error(j?.error || "修正反映に失敗しました。");
 
       const improved = String(j?.improved ?? text);
+      const issues = Array.isArray(j?.issues) ? j.issues : [];
+
+      // 差分表示＆本文更新
       setReviewHtml(markDiffRed(text, improved));
       setText(improved);
-      setReviewIssues(Array.isArray(j?.issues) ? j.issues : []);
+      setReviewIssues(issues);
+
+      // 改善サマリ更新
+      const summary = j?.summary || (issues.length ? issues.join(" / ") : improveSummary);
+      setImproveSummary(summary);
+
+      // ▼ “改善案”の直下に履歴カードを追加（GitHub用に2分割）
+      const oldSnippet = text.replace(/\s+/g, " ").slice(0, 160);
+      const newSnippet = improved.replace(/\s+/g, " ").slice(0, 160);
+      const issueText = [
+        "## タスク: 修正要望の反映",
+        "### 要望",
+        requestNote,
+        "### 改善案サマリ",
+        summary || "（改善案の要約）",
+        "### チェックリスト",
+        "- [ ] 要望を反映した本文を生成",
+        "- [ ] 禁止語/表記ゆれ/誤字の最終チェック",
+        `- [ ] 文字数レンジ (${minChars}〜${maxChars}) 内に調整`,
+      ].join("\n\n");
+
+      const prDiff = ["```diff", `- ${oldSnippet}`, `+ ${newSnippet}`, "```"].join("\n");
+
+      setGhBlocks((prev) => [
+        { ts: new Date().toLocaleString("ja-JP"), issueText, prDiff },
+        ...prev,
+      ]);
+
       setRequestNote("");
     } catch (err: any) {
       setError(err?.message || "エラーが発生しました。");
@@ -174,15 +206,20 @@ export default function Page() {
     setName("");
     setUrl("");
     setMustInput("");
-    setTone("プロフェッショナル");
     setMinChars(450);
     setMaxChars(550);
     setText("");
     setReviewIssues([]);
     setReviewHtml("");
     setRequestNote("");
+    setImproveSummary("");
+    setGhBlocks([]);
     setError(null);
   }
+
+  const copy = async (text: string) => {
+    try { await navigator.clipboard.writeText(text); } catch {}
+  };
 
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900">
@@ -236,57 +273,39 @@ export default function Page() {
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="flex flex-col gap-1">
-                  <span className="text-sm font-medium">トーン</span>
-                  <select className="border rounded-lg p-2" value={tone} onChange={(e) => setTone(e.target.value as any)}>
-                    {tones.map((t) => (
-                      <option key={t} value={t}>{t}</option>
-                    ))}
-                  </select>
+                  <span className="text-sm font-medium">最小文字数（全角）</span>
+                  <input
+                    type="number"
+                    className="border rounded-lg p-2"
+                    value={minChars}
+                    min={200}
+                    max={2000}
+                    onChange={(e) => setMinChars(clamp(Number(e.target.value || 450), 200, 2000))}
+                  />
                 </label>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <label className="flex flex-col gap-1">
-                    <span className="text-sm font-medium">最小文字数（全角）</span>
-                    <input
-                      type="number"
-                      className="border rounded-lg p-2"
-                      value={minChars}
-                      min={200}
-                      max={2000}
-                      onChange={(e) => setMinChars(clamp(Number(e.target.value || 450), 200, 2000))}
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1">
-                    <span className="text-sm font-medium">最大文字数（全角）</span>
-                    <input
-                      type="number"
-                      className="border rounded-lg p-2"
-                      value={maxChars}
-                      min={200}
-                      max={2000}
-                      onChange={(e) => setMaxChars(clamp(Number(e.target.value || 550), 200, 2000))}
-                    />
-                  </label>
-                </div>
+                <label className="flex flex-col gap-1">
+                  <span className="text-sm font-medium">最大文字数（全角）</span>
+                  <input
+                    type="number"
+                    className="border rounded-lg p-2"
+                    value={maxChars}
+                    min={200}
+                    max={2000}
+                    onChange={(e) => setMaxChars(clamp(Number(e.target.value || 550), 200, 2000))}
+                  />
+                </label>
                 <div className="col-span-2 text-xs text-neutral-500">
                   例：450〜550を推奨。現在：{minChars}〜{maxChars}（本文長：{jaLen(text)}）
                 </div>
               </div>
 
               <div className="flex gap-3">
-                <button
-                  type="submit"
-                  disabled={busy || !name || !url}
-                  className={cn(
-                    "px-4 py-2 rounded-xl text-white",
-                    busy ? "bg-neutral-400" : "bg-black hover:bg-neutral-800"
-                  )}
-                >
+                <Button type="submit" disabled={busy || !name || !url}>
                   {busy ? "生成中…" : "文章を生成（API）"}
-                </button>
-                <button type="button" className="px-4 py-2 rounded-xl border" onClick={handleReset}>
+                </Button>
+                <Button type="button" color="orange" onClick={handleReset}>
                   リセット
-                </button>
+                </Button>
               </div>
 
               {error && <div className="text-sm text-red-600">{error}</div>}
@@ -296,14 +315,9 @@ export default function Page() {
           <section className="bg-white rounded-2xl shadow p-4 space-y-3">
             <div className="text-sm font-medium">自動チェック &amp; 改善</div>
             <div className="flex gap-3">
-              <button
-                type="button"
-                onClick={handleAutoReview}
-                disabled={busy || !text}
-                className={cn("px-3 py-2 rounded-xl text-white", busy ? "bg-neutral-400" : "bg-indigo-600 hover:bg-indigo-700")}
-              >
+              <Button type="button" onClick={handleAutoReview} disabled={busy || !text}>
                 自動チェック
-              </button>
+              </Button>
               <span className="text-xs text-neutral-500 self-center">
                 依頼条件の遵守／不自然表現／誤字脱字を点検し、改善案を反映します（変更箇所は赤字）。
               </span>
@@ -323,21 +337,48 @@ export default function Page() {
               <label className="text-sm font-medium">追加の修正要望</label>
               <textarea
                 className="border rounded-lg p-2 min-h-[72px]"
-                placeholder="例）冒頭で物件名を自然に強調／交通の具体性を1文だけ入れてほしい／トーンは少しフレンドリー寄りに など"
+                placeholder="例）冒頭で物件名を自然に強調／交通の具体性を1文だけ入れてほしい など"
                 value={requestNote}
                 onChange={(e) => setRequestNote(e.target.value)}
               />
               <div>
-                <button
+                <Button
                   type="button"
                   onClick={handleApplyRequest}
                   disabled={busy || !text || !requestNote.trim()}
-                  className={cn("px-3 py-2 rounded-xl text-white", busy ? "bg-neutral-400" : "bg-emerald-600 hover:bg-emerald-700")}
+                  color="orange"
                 >
                   要望を反映して再修正
-                </button>
+                </Button>
               </div>
             </div>
+
+            {/* ▼ “改善案”の直下に履歴カード（GitHub用に分けて表示） */}
+            {ghBlocks.length > 0 && (
+              <section className="space-y-4 pt-2">
+                {ghBlocks.map((b, i) => (
+                  <div key={i} className="rounded-2xl border p-4 space-y-4">
+                    <div className="text-xs text-neutral-500">{b.ts}</div>
+
+                    <div className="space-y-2">
+                      <h3 className="font-semibold">GitHub Issue 文面</h3>
+                      <pre className="whitespace-pre-wrap text-sm bg-gray-50 rounded-xl p-3">{b.issueText}</pre>
+                      <div className="flex gap-2">
+                        <Button onClick={() => copy(b.issueText)}>コピー</Button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <h3 className="font-semibold">PR 変更点（擬似diff）</h3>
+                      <pre className="overflow-x-auto text-sm bg-gray-50 rounded-xl p-3">{b.prDiff}</pre>
+                      <div className="flex gap-2">
+                        <Button color="orange" onClick={() => copy(b.prDiff)}>コピー</Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </section>
+            )}
           </section>
         </form>
 

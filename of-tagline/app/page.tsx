@@ -1,4 +1,6 @@
-import React, { useMemo, useState } from "react";
+'use client';
+import { useMemo, useState } from "react";
+
 
 /* ========== helpers ========== */
 const cn = (...a: (string | false | null | undefined)[]) => a.filter(Boolean).join(" ");

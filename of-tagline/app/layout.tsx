@@ -1,8 +1,9 @@
-import './globals.css'
+import "./globals.css";
+import type { Metadata } from "next";
 
-export const metadata = {
-  title: "マンション販促コピー・テスト",
-  description: "外観＋間取りからキャッチコピー生成デモ",
+export const metadata: Metadata = {
+  title: "マンション説明文作成",
+  description: "URLから抽出してマンションの説明文を作成するツール",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -1,3 +1,4 @@
+// app/api/review/route.ts
 export const runtime = "nodejs";
 import OpenAI from "openai";
 
@@ -27,23 +28,46 @@ const stripPriceAndSpaces = (s: string) =>
     .replace(/\s{2,}/g, " ")
     .trim();
 
-/* ---------- BAN（維持） ---------- */
+const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const stripBannedWords = (s: string) =>
+  s.replace(new RegExp(`(${BANNED.map(esc).join("|")})`, "g"), "");
+
+/* ---------- BAN ---------- */
 const BANNED = [
   "完全","完ぺき","絶対","万全","100％","フルリフォーム","理想","日本一","日本初","業界一","超","当社だけ","他に類を見ない",
   "抜群","一流","秀逸","羨望","屈指","特選","厳選","正統","由緒正しい","地域でナンバーワン","最高","最高級","極","特級","最新",
   "最適","至便","至近","一級","絶好","買得","掘出","土地値","格安","投売り","破格","特安","激安","安値","バーゲンセール",
-  "ディズニー","ユニバーサルスタジオ"
+  "ディズニー","ユニバーサルスタジオ",
+  "歴史ある","歴史的","歴史的建造物","由緒ある"
 ];
 
-/* ---------- STYLE GUIDE（describe と同じ） ---------- */
-const STYLE_GUIDE = [
-  "文体: 上質・落ち着いた・事実ベース。過度な誇張や感嘆記号は避ける。",
-  "構成（目安）: ①全体コンセプト/立地 ②敷地規模・ランドスケープ ③建築/保存・デザイン ④交通アクセス ⑤共用施設/サービス ⑥結び。",
-  "語彙例: 「〜という全体コンセプトのもと」「〜を実現」「〜を望む立地」「〜に相応しい」「〜がひろがる」「〜を提供します」。",
-  "体裁: 体言止めは1〜2文。文長は40〜70字程度で読みやすく。固有名詞は正確に。",
-  "制約: 価格/金額/円/万円・電話番号・問い合わせ誘導・外部URLは不可。禁止語NG。"
-].join("\n");
+/* ---------- STYLE PRESETS（3トーン） ---------- */
+function styleGuide(tone: string): string {
+  if (tone === "親しみやすい") {
+    return [
+      "文体: 親しみやすく、やわらかい丁寧語。過度なカジュアルや絵文字は使わない。感嘆記号は控えめ。",
+      "構成: ①立地・雰囲気 ②敷地/外観の印象 ③アクセス ④共用/サービス ⑤日常のシーンを想起させる結び。",
+      "語彙例: 「〜がうれしい」「〜を感じられます」「〜にも便利」「〜に寄り添う」。",
+      "文長: 30〜60字中心。"
+    ].join("\n");
+  }
+  if (tone === "一般的") {
+    return [
+      "文体: 中立・説明的で読みやすい丁寧語。誇張を避け、事実ベースで記述。",
+      "構成: ①全体概要 ②規模/デザイン ③アクセス ④共用/管理 ⑤まとめ。",
+      "語彙例: 「〜に位置」「〜を採用」「〜を提供」「〜が整う」。",
+      "文長: 40〜70字中心。"
+    ].join("\n");
+  }
+  return [
+    "文体: 上品・落ち着いた・事実ベース。過度な誇張や感嘆記号は避ける。",
+    "構成: ①全体コンセプト/立地 ②敷地規模・ランドスケープ ③建築/保存・デザイン ④交通アクセス ⑤共用/サービス ⑥結び。",
+    "語彙例: 「〜という全体コンセプトのもと」「〜を実現」「〜に相応しい」「〜がひろがる」「〜を提供します」。",
+    "文長: 40〜70字中心。体言止めは1〜2文に留める。"
+  ].join("\n");
+}
 
+/* ---------- handler ---------- */
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -55,7 +79,7 @@ export async function POST(req: Request) {
       minChars = 450,
       maxChars = 550,
       request = "",
-      tone = "上質・落ち着いた",
+      tone = "上品・落ち着いた",
     } = body || {};
 
     if (!text) {
@@ -63,8 +87,9 @@ export async function POST(req: Request) {
     }
 
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const STYLE_GUIDE = styleGuide(tone);
 
-    // json_object 使用時の要件：「json」という語を含める
+    // json_object 使用の要件：「json」を含める
     const system =
       'Return ONLY a json object like {"improved": string, "issues": string[], "summary": string}. (json)\n' +
       [
@@ -86,12 +111,12 @@ export async function POST(req: Request) {
       request,
       text_original: text,
       checks: [
-        "トーンが上質・落ち着いたになるよう整っているか（誇張/感嘆の抑制）",
-        "構成の流れが概ねスタイルガイドに沿っているか",
-        "マストワードが自然に含まれるか",
-        "禁止語（上記）・価格/金額/円/万円・電話番号・URLが含まれていないか",
-        `文字数が ${minChars}〜${maxChars} に収まっているか（超過時は要圧縮）`,
-        "誤字脱字/不自然表現/重複表現がないか",
+        "トーンが指定スタイルに合致（誇張・感嘆の抑制）",
+        "構成の流れが概ねスタイルガイドに沿う",
+        "マストワードが自然に含まれる",
+        "禁止語・価格/金額/円/万円・電話番号・URLがない",
+        `文字数が ${minChars}〜${maxChars} に収まる（超過時は圧縮）`,
+        "誤字脱字/不自然表現/重複表現を修正",
       ],
     };
 
@@ -120,9 +145,11 @@ export async function POST(req: Request) {
       improved = text; // パース失敗時は元文から続行
     }
 
+    // サニタイズ＆BAN除去
     improved = stripPriceAndSpaces(improved);
+    improved = stripBannedWords(improved);
 
-    // ② レンジ外なら再圧縮して矯正（スタイル維持）
+    // ② レンジ外なら再圧縮（スタイル維持）
     const len = countJa(improved);
     if (len < minChars || len > maxChars) {
       const r2 = await openai.chat.completions.create({
@@ -134,7 +161,7 @@ export async function POST(req: Request) {
             role: "system",
             content:
               'Output ONLY {"improved": string}. (json)\n' +
-              `日本語・${tone}のまま。スタイルガイドを遵守。` + "\n" + STYLE_GUIDE + "\n" +
+              `日本語・${tone}のまま。スタイルガイドを遵守。\n${STYLE_GUIDE}\n` +
               `文字数は【厳守】${minChars}〜${maxChars}（全角）。` +
               `価格・金額・円/万円/億は禁止。禁止語：${BANNED.join("、")}`,
           },
@@ -144,9 +171,9 @@ export async function POST(req: Request) {
       try {
         const raw2 = r2.choices?.[0]?.message?.content || "{}";
         const p2 = JSON.parse(raw2);
-        improved = stripPriceAndSpaces(String(p2?.improved || improved));
+        improved = stripBannedWords(stripPriceAndSpaces(String(p2?.improved || improved)));
       } catch {
-        improved = stripPriceAndSpaces(improved);
+        improved = stripBannedWords(stripPriceAndSpaces(improved));
       }
     }
 

@@ -7,12 +7,13 @@ import { Button } from "../components/ui/Button";
 const cn = (...a: (string | false | null | undefined)[]) => a.filter(Boolean).join(" ");
 const jaLen = (s: string) => Array.from(s || "").length;
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
-const parseWords = (src: string) => src.split(/[ ,、\s\n/]+/).map((s) => s.trim()).filter(Boolean);
+const parseWords = (src: string) =>
+  String(src || "").split(/[ ,、\s\n/]+/).map((s) => s.trim()).filter(Boolean);
 
 /** LCSベースの差分（挿入/変更部分を <mark> 赤表示） */
 function markDiffRed(original: string, improved: string) {
-  const A = Array.from(original);
-  const B = Array.from(improved);
+  const A = Array.from(original || "");
+  const B = Array.from(improved || "");
   const n = A.length, m = B.length;
   const dp: number[][] = Array.from({ length: n + 1 }, () => Array(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
@@ -21,7 +22,7 @@ function markDiffRed(original: string, improved: string) {
   let i = 0, j = 0;
   while (i < n && j < m) {
     if (A[i] === B[j]) { out.push(B[j]); i++; j++; }
-    else if (dp[i + 1][j] >= dp[i][j + 1]) { i++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { i++; } // 削除は赤にしない
     else { out.push(`<mark class="bg-red-50 text-red-600">${B[j++]}</mark>`); }
   }
   while (j < m) out.push(`<mark class="bg-red-50 text-red-600">${B[j++]}</mark>`);
@@ -37,6 +38,11 @@ export default function Page() {
   const [url, setUrl] = useState("");
   const [mustInput, setMustInput] = useState("");
   const mustWords = useMemo(() => parseWords(mustInput), [mustInput]);
+
+  // トーン（3パターン）
+  const tones = ["上品・落ち着いた", "一般的", "親しみやすい"] as const;
+  type Tone = typeof tones[number];
+  const [tone, setTone] = useState<Tone>("上品・落ち着いた");
 
   // 文字数
   const [minChars, setMinChars] = useState(450);
@@ -67,7 +73,7 @@ export default function Page() {
   // 自動チェックのステータス
   const [checkStatus, setCheckStatus] = useState<CheckStatus>("idle");
 
-  const validUrl = (s: string) => /^https?:\/\/\S+/i.test(s.trim());
+  const validUrl = (s: string) => /^https?:\/\/\S+/i.test(String(s || "").trim());
   const currentText = text3 || text2 || text1;
 
   /* ------------ 生成（完了後に自動チェックを実行） ------------ */
@@ -93,7 +99,7 @@ export default function Page() {
       const res = await fetch("/api/describe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, url, mustWords: mustInput, minChars, maxChars }),
+        body: JSON.stringify({ name, url, mustWords: mustInput, tone, minChars, maxChars }),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j?.error || "生成に失敗しました。");
@@ -126,6 +132,7 @@ export default function Page() {
         body: JSON.stringify({
           text: src,
           name, url, mustWords: mustInput,
+          tone,
           minChars, maxChars,
           request: "",
         }),
@@ -165,6 +172,7 @@ export default function Page() {
         body: JSON.stringify({
           text: `${text2}\n\n【追加要望】${requestNote}`,
           name, url, mustWords: mustInput,
+          tone,
           minChars, maxChars,
         }),
       });
@@ -189,6 +197,7 @@ export default function Page() {
 
   function handleReset() {
     setName(""); setUrl(""); setMustInput("");
+    setTone("上品・落ち着いた");
     setMinChars(450); setMaxChars(550);
     setText1(""); setText2(""); setText3("");
     setDiff12Html(""); setDiff23Html("");
@@ -215,7 +224,7 @@ export default function Page() {
     <div className="min-h-screen bg-neutral-50 text-neutral-900">
       <header className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b">
         <div className="max-w-7xl mx-auto px-5 py-3 flex items-center justify-between">
-          <div className="text-lg font-semibold">マンション説明文ジェネレーター（URL版・チェック付き）</div>
+          <div className="text-lg font-semibold">マンション説明文作成</div>
           <div className="text-xs text-neutral-500">Demo / Frontend with API</div>
         </div>
       </header>
@@ -227,35 +236,71 @@ export default function Page() {
             <div className="grid gap-3">
               <label className="flex flex-col gap-1">
                 <span className="text-sm font-medium">物件名</span>
-                <input className="border rounded-lg p-2" placeholder="例）パークタワー晴海"
-                  value={name} onChange={(e) => setName(e.target.value)} />
+                <input
+                  className="border rounded-lg p-2"
+                  placeholder="例）パークタワー晴海"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
               </label>
 
               <label className="flex flex-col gap-1">
                 <span className="text-sm font-medium">物件URL</span>
-                <input className="border rounded-lg p-2" placeholder="例）https://www.rehouse.co.jp/buy/mansion/..."
-                  value={url} onChange={(e) => setUrl(e.target.value)} />
-                {!url || validUrl(url) ? null : <span className="text-xs text-red-600">URLの形式が正しくありません。</span>}
+                <input
+                  className="border rounded-lg p-2"
+                  placeholder="例）https://www.rehouse.co.jp/buy/mansion/..."
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                />
+                {!url || validUrl(url) ? null : (
+                  <span className="text-xs text-red-600">URLの形式が正しくありません。</span>
+                )}
               </label>
 
               <label className="flex flex-col gap-1">
                 <span className="text-sm font-medium">マストワード</span>
-                <textarea className="border rounded-lg p-2 min-h-[84px]"
+                <textarea
+                  className="border rounded-lg p-2 min-h-[84px]"
                   placeholder="例）駅徒歩3分 ラウンジ ペット可 角部屋 など（空白/改行/カンマ区切り）"
-                  value={mustInput} onChange={(e) => setMustInput(e.target.value)} />
+                  value={mustInput}
+                  onChange={(e) => setMustInput(e.target.value)}
+                />
                 <span className="text-xs text-neutral-500">認識語数：{mustWords.length}</span>
+              </label>
+
+              <label className="flex flex-col gap-1">
+                <span className="text-sm font-medium">トーン</span>
+                <select
+                  className="border rounded-lg p-2"
+                  value={tone}
+                  onChange={(e) => setTone(e.target.value as Tone)}
+                >
+                  {tones.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
               </label>
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="flex flex-col gap-1">
                   <span className="text-sm font-medium">最小文字数（全角）</span>
-                  <input type="number" className="border rounded-lg p-2" value={minChars} min={200} max={2000}
-                    onChange={(e) => setMinChars(clamp(Number(e.target.value || 450), 200, 2000))} />
+                  <input
+                    type="number"
+                    className="border rounded-lg p-2"
+                    value={minChars}
+                    min={200}
+                    max={2000}
+                    onChange={(e) => setMinChars(clamp(Number(e.target.value || 450), 200, 2000))}
+                  />
                 </label>
                 <label className="flex flex-col gap-1">
                   <span className="text-sm font-medium">最大文字数（全角）</span>
-                  <input type="number" className="border rounded-lg p-2" value={maxChars} min={200} max={2000}
-                    onChange={(e) => setMaxChars(clamp(Number(e.target.value || 550), 200, 2000))} />
+                  <input
+                    type="number"
+                    className="border rounded-lg p-2"
+                    value={maxChars}
+                    min={200}
+                    max={2000}
+                    onChange={(e) => setMaxChars(clamp(Number(e.target.value || 550), 200, 2000))}
+                  />
                 </label>
                 <div className="col-span-2 text-xs text-neutral-500">
                   推奨：450〜550　|　現在：{minChars}〜{maxChars}　|　最新本文長：{jaLen(currentText)} 文字
@@ -296,24 +341,35 @@ export default function Page() {
             {(issues2.length > 0 || diff12Html) && (
               <div className="space-y-2">
                 {issues2.length > 0 && (
-                  <ul className="text-sm list-disc pl-5 space-y-1">{issues2.map((it, i) => <li key={i}>{it}</li>)}</ul>
+                  <ul className="text-sm list-disc pl-5 space-y-1">
+                    {issues2.map((it, i) => <li key={i}>{it}</li>)}
+                  </ul>
                 )}
                 {!!summary2 && <div className="text-xs text-neutral-500">要約: {summary2}</div>}
                 {!!diff12Html && (
-                  <div className="border rounded-lg p-3 text-sm leading-relaxed"
-                       dangerouslySetInnerHTML={{ __html: diff12Html }} />
+                  <div
+                    className="border rounded-lg p-3 text-sm leading-relaxed"
+                    dangerouslySetInnerHTML={{ __html: diff12Html }}
+                  />
                 )}
               </div>
             )}
 
             <div className="grid gap-2">
               <label className="text-sm font-medium">追加の修正要望</label>
-              <textarea className="border rounded-lg p-2 min-h-[72px]"
+              <textarea
+                className="border rounded-lg p-2 min-h-[72px]"
                 placeholder="例）冒頭で物件名を自然に強調／交通の具体性を1文だけ入れてほしい など"
-                value={requestNote} onChange={(e) => setRequestNote(e.target.value)} />
+                value={requestNote}
+                onChange={(e) => setRequestNote(e.target.value)}
+              />
               <div>
-                <Button type="button" onClick={handleApplyRequest}
-                        disabled={busy || !text2 || !requestNote.trim()} color="orange">
+                <Button
+                  type="button"
+                  onClick={handleApplyRequest}
+                  disabled={busy || !text2 || !requestNote.trim()}
+                  color="orange"
+                >
                   要望を反映して再修正
                 </Button>
               </div>
@@ -333,8 +389,11 @@ export default function Page() {
               </div>
             </div>
             <div className="p-4 flex-1 overflow-auto">
-              {text1 ? <p className="whitespace-pre-wrap leading-relaxed text-[15px]">{text1}</p>
-                     : <div className="text-neutral-500 text-sm">— 未生成 —</div>}
+              {text1 ? (
+                <p className="whitespace-pre-wrap leading-relaxed text-[15px]">{text1}</p>
+              ) : (
+                <div className="text-neutral-500 text-sm">— 未生成 —</div>
+              )}
             </div>
           </div>
 
@@ -348,8 +407,11 @@ export default function Page() {
               </div>
             </div>
             <div className="p-4 flex-1 overflow-auto">
-              {text2 ? <p className="whitespace-pre-wrap leading-relaxed text-[15px]">{text2}</p>
-                     : <div className="text-neutral-500 text-sm">— 自動チェック待ち／未実行 —</div>}
+              {text2 ? (
+                <p className="whitespace-pre-wrap leading-relaxed text-[15px]">{text2}</p>
+              ) : (
+                <div className="text-neutral-500 text-sm">— 自動チェック待ち／未実行 —</div>
+              )}
             </div>
           </div>
 
@@ -363,8 +425,11 @@ export default function Page() {
               </div>
             </div>
             <div className="p-4 flex-1 overflow-auto">
-              {text3 ? <p className="whitespace-pre-wrap leading-relaxed text-[15px]">{text3}</p>
-                     : <div className="text-neutral-500 text-sm">— まだ要望未反映 —</div>}
+              {text3 ? (
+                <p className="whitespace-pre-wrap leading-relaxed text-[15px]">{text3}</p>
+              ) : (
+                <div className="text-neutral-500 text-sm">— まだ要望未反映 —</div>
+              )}
             </div>
           </div>
 

@@ -1,4 +1,3 @@
-// app/api/describe/route.ts
 export const runtime = "nodejs";
 import OpenAI from "openai";
 
@@ -19,7 +18,7 @@ function hardCapJa(s: string, max: number): string {
   const arr = Array.from(s || "");
   if (arr.length <= max) return s;
   const upto = arr.slice(0, max);
-  const enders = new Set(["。","！","？","."]);
+  const enders = new Set(["。", "！", "？", "."]);
   let cut = -1;
   for (let i = upto.length - 1; i >= 0; i--) {
     if (enders.has(upto[i])) { cut = i + 1; break; }
@@ -42,16 +41,15 @@ const stripPriceAndSpaces = (s: string) =>
 
 /** BANワードの除去（保険） */
 const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const stripBannedWords = (s: string) =>
-  s.replace(new RegExp(`(${BANNED.map(esc).join("|")})`, "g"), "");
+const stripWords = (s: string, words: string[]) =>
+  s.replace(new RegExp(`(${words.map(esc).join("|")})`, "g"), "");
 
-/* ---------- BAN（維持＋履歴系も追加） ---------- */
+/* ---------- BAN（維持＋歴史系も追加） ---------- */
 const BANNED = [
   "完全","完ぺき","絶対","万全","100％","フルリフォーム","理想","日本一","日本初","業界一","超","当社だけ","他に類を見ない",
   "抜群","一流","秀逸","羨望","屈指","特選","厳選","正統","由緒正しい","地域でナンバーワン","最高","最高級","極","特級","最新",
   "最適","至便","至近","一級","絶好","買得","掘出","土地値","格安","投売り","破格","特安","激安","安値","バーゲンセール",
   "ディズニー","ユニバーサルスタジオ",
-  // 追加（歴史系の誤解を招く表現）
   "歴史ある","歴史的","歴史的建造物","由緒ある"
 ];
 
@@ -59,27 +57,69 @@ const BANNED = [
 function styleGuide(tone: string): string {
   if (tone === "親しみやすい") {
     return [
-      "文体: 親しみやすく、やわらかい丁寧語。過度なカジュアルや絵文字は使わない。感嘆記号は控えめ（!は非推奨）。",
-      "構成: ①立地・雰囲気 ②敷地/外観の印象 ③アクセス ④共用/サービス ⑤日常のシーンを想起させる結び。",
-      "語彙例: 「〜がうれしい」「〜を感じられます」「〜にも便利」「〜に寄り添う」など。二人称の多用は避けつつ、温度感は保つ。",
-      "文長: 短め〜中庸（30〜60字）。接続詞を使い回ししない。"
+      "文体: 親しみやすく、やわらかい丁寧語。誇張・絵文字・感嘆記号は抑制。",
+      "構成: ①立地・雰囲気 ②敷地/外観の印象 ③アクセス ④共用/サービス ⑤日常シーンを想起させる結び。",
+      "語彙例: 「〜がうれしい」「〜を感じられます」「〜にも便利」「〜に寄り添う」。",
+      "文長: 30〜60字中心。"
     ].join("\n");
   }
   if (tone === "一般的") {
     return [
-      "文体: 中立・説明的で読みやすい丁寧語。誇張を避け、事実ベースで記述。",
+      "文体: 中立・説明的で読みやすい丁寧語。事実ベースで誇張を避ける。",
       "構成: ①全体概要 ②規模/デザイン ③アクセス ④共用/管理 ⑤まとめ。",
-      "語彙例: 「〜に位置」「〜を採用」「〜を提供」「〜が整う」。",
-      "文長: 中庸（40〜70字）。体言止めは連続させない。"
+      "語彙例: 「〜に位置」「〜を採用」「〜が整う」「〜を提供」。",
+      "文長: 40〜70字中心。"
     ].join("\n");
   }
-  // デフォルト：上品・落ち着いた
   return [
     "文体: 上品・落ち着いた・事実ベース。過度な誇張や感嘆記号は避ける。",
     "構成: ①全体コンセプト/立地 ②敷地規模・ランドスケープ ③建築/保存・デザイン ④交通アクセス ⑤共用/サービス ⑥結び。",
     "語彙例: 「〜という全体コンセプトのもと」「〜を実現」「〜に相応しい」「〜がひろがる」「〜を提供します」。",
-    "文長: 中庸（40〜70字）。体言止めは1〜2文に留める。固有名詞は正確に。"
+    "文長: 40〜70字中心。体言止めは1〜2文に留める。"
   ].join("\n");
+}
+
+/** draft を min〜max に収める矯正（最大3回） */
+async function ensureLengthDescribe(opts: {
+  openai: OpenAI; draft: string; context: string; min: number; max: number; tone: string; style: string;
+}) {
+  let out = opts.draft;
+  for (let i = 0; i < 3; i++) {
+    const len = countJa(out);
+    if (len >= opts.min && len <= opts.max) return out;
+
+    const need = len < opts.min ? "expand" : "condense";
+    const r = await opts.openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content:
+            'Return ONLY {"text": string}. (json)\n' +
+            `日本語・トーン:${opts.tone}。次のスタイルガイドを遵守：\n${opts.style}\n` +
+            `目的: 文字数を${opts.min}〜${opts.max}（全角）に${need === "expand" ? "増やし" : "収め"}る。\n` +
+            "事実が不足する場合は一般的で安全な叙述で補い、固有の事実を創作しない。価格/金額/円/万円・電話番号・URLは禁止。"
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            current_text: out,
+            extracted_text: opts.context,
+            action: need
+          })
+        }
+      ]
+    });
+    try {
+      out = String(JSON.parse(r.choices?.[0]?.message?.content || "{}")?.text || out);
+    } catch { /* keep out */ }
+    out = stripPriceAndSpaces(out);
+    out = stripWords(out, BANNED);
+    if (countJa(out) > opts.max) out = hardCapJa(out, opts.max);
+  }
+  return out;
 }
 
 /* ---------- handler ---------- */
@@ -109,17 +149,16 @@ export async function POST(req: Request) {
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const STYLE_GUIDE = styleGuide(tone);
 
-    // json_object の要件：「json」という語を含める
+    // ① 生成
     const system =
-      'Return ONLY a json object like {"text": string}. No markdown, no explanation. (json)\n' +
+      'Return ONLY a json object like {"text": string}. (json)\n' +
       [
         "あなたは日本語の不動産コピーライターです。",
         `トーン: ${tone}。次のスタイルガイドに従う。`,
         STYLE_GUIDE,
-        `文字数は【厳守】${minChars}〜${maxChars}（全角ベース）。`,
-        "価格/金額/円/万円・兆/億/万などの金額表現は書かない。",
-        "電話番号・問い合わせ誘導・外部URLは書かない。",
-        `禁止語を使わない：${BANNED.join("、")}`,
+        `文字数は【厳守】${minChars}〜${maxChars}（全角）。`,
+        "事実ベース。価格/金額/円/万円・電話番号・外部URLは禁止。",
+        `禁止語を使わない：${BANNED.join("、")}`
       ].join("\n");
 
     const payload = {
@@ -137,7 +176,6 @@ export async function POST(req: Request) {
       do_not_include: ["リフォーム内容","方位","面積","お問い合わせ文言", ...BANNED],
     };
 
-    // ① 生成
     const r1 = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.2,
@@ -154,35 +192,22 @@ export async function POST(req: Request) {
       text = String(JSON.parse(raw)?.text || "");
     } catch { text = ""; }
 
-    // サニタイズ＆BAN除去
+    // サニタイズ
     text = stripPriceAndSpaces(text);
-    text = stripBannedWords(text);
+    text = stripWords(text, BANNED);
 
-    // レンジ外は再圧縮（スタイル維持）
-    if (!text || countJa(text) < minChars || countJa(text) > maxChars) {
-      const r2 = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        temperature: 0.2,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content:
-              'Rewrite and output ONLY {"text": string}. (json)\n' +
-              `日本語・${tone}のまま。スタイルガイドを遵守。\n${STYLE_GUIDE}\n` +
-              `文字数は【厳守】${minChars}〜${maxChars}（全角）。価格/金額/円/万円は禁止。` +
-              `禁止語：${BANNED.join("、")}`,
-          },
-          { role: "user", content: JSON.stringify({ text, name }) },
-        ],
-      });
-      try {
-        const raw2 = r2.choices?.[0]?.message?.content || "{}";
-        text = stripBannedWords(stripPriceAndSpaces(String(JSON.parse(raw2)?.text || text)));
-      } catch {}
-    }
+    // ② 長さ矯正（最大3回）
+    text = await ensureLengthDescribe({
+      openai,
+      draft: text,
+      context: extracted_text,
+      min: minChars,
+      max: maxChars,
+      tone,
+      style: STYLE_GUIDE,
+    });
 
-    // 最終ハード上限（句点優先でカット）
+    // ③ 上限は最終カット
     if (countJa(text) > maxChars) text = hardCapJa(text, maxChars);
 
     return new Response(JSON.stringify({ text }), {

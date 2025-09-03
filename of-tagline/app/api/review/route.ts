@@ -8,7 +8,7 @@ function hardCapJa(s: string, max: number): string {
   const arr = Array.from(s || "");
   if (arr.length <= max) return s;
   const upto = arr.slice(0, max);
-  const enders = new Set(["。", "！", "？", "."]);
+  const enders = new Set(["。","！","？","."]);
   let cut = -1;
   for (let i = upto.length - 1; i >= 0; i--) {
     if (enders.has(upto[i])) { cut = i + 1; break; }
@@ -27,7 +27,7 @@ const stripPriceAndSpaces = (s: string) =>
     .replace(/\s{2,}/g, " ")
     .trim();
 
-/* ---------- あなたのBAN（維持） ---------- */
+/* ---------- BAN（維持） ---------- */
 const BANNED = [
   "完全","完ぺき","絶対","万全","100％","フルリフォーム","理想","日本一","日本初","業界一","超","当社だけ","他に類を見ない",
   "抜群","一流","秀逸","羨望","屈指","特選","厳選","正統","由緒正しい","地域でナンバーワン","最高","最高級","極","特級","最新",
@@ -35,7 +35,15 @@ const BANNED = [
   "ディズニー","ユニバーサルスタジオ"
 ];
 
-/* ---------- handler ---------- */
+/* ---------- STYLE GUIDE（describe と同じ） ---------- */
+const STYLE_GUIDE = [
+  "文体: 上質・落ち着いた・事実ベース。過度な誇張や感嘆記号は避ける。",
+  "構成（目安）: ①全体コンセプト/立地 ②敷地規模・ランドスケープ ③建築/保存・デザイン ④交通アクセス ⑤共用施設/サービス ⑥結び。",
+  "語彙例: 「〜という全体コンセプトのもと」「〜を実現」「〜を望む立地」「〜に相応しい」「〜がひろがる」「〜を提供します」。",
+  "体裁: 体言止めは1〜2文。文長は40〜70字程度で読みやすく。固有名詞は正確に。",
+  "制約: 価格/金額/円/万円・電話番号・問い合わせ誘導・外部URLは不可。禁止語NG。"
+].join("\n");
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -47,6 +55,7 @@ export async function POST(req: Request) {
       minChars = 450,
       maxChars = 550,
       request = "",
+      tone = "上質・落ち着いた",
     } = body || {};
 
     if (!text) {
@@ -60,11 +69,12 @@ export async function POST(req: Request) {
       'Return ONLY a json object like {"improved": string, "issues": string[], "summary": string}. (json)\n' +
       [
         "あなたは日本語の不動産コピーの校閲/編集者です。",
+        `トーン: ${tone}。次のスタイルガイドを遵守。`,
+        STYLE_GUIDE,
         `文字数は【厳守】${minChars}〜${maxChars}（全角）。`,
         "価格/金額/円/万円・兆/億/万などの金額表現は禁止。",
         "電話番号・問い合わせ誘導・外部URLは書かない。",
         `禁止語：${BANNED.join("、")}`,
-        "自然で読みやすい日本語に整えてください。",
       ].join("\n");
 
     const payload = {
@@ -76,10 +86,11 @@ export async function POST(req: Request) {
       request,
       text_original: text,
       checks: [
+        "トーンが上質・落ち着いたになるよう整っているか（誇張/感嘆の抑制）",
+        "構成の流れが概ねスタイルガイドに沿っているか",
         "マストワードが自然に含まれるか",
-        "交通・周辺の具体性が過不足なく1回以上あるか",
         "禁止語（上記）・価格/金額/円/万円・電話番号・URLが含まれていないか",
-        `文字数が ${minChars}〜${maxChars} に収まっているか`,
+        `文字数が ${minChars}〜${maxChars} に収まっているか（超過時は要圧縮）`,
         "誤字脱字/不自然表現/重複表現がないか",
       ],
     };
@@ -111,7 +122,7 @@ export async function POST(req: Request) {
 
     improved = stripPriceAndSpaces(improved);
 
-    // ② レンジ外なら再圧縮して矯正
+    // ② レンジ外なら再圧縮して矯正（スタイル維持）
     const len = countJa(improved);
     if (len < minChars || len > maxChars) {
       const r2 = await openai.chat.completions.create({
@@ -123,7 +134,8 @@ export async function POST(req: Request) {
             role: "system",
             content:
               'Output ONLY {"improved": string}. (json)\n' +
-              `日本語で、文字数は【厳守】${minChars}〜${maxChars}（全角）。` +
+              `日本語・${tone}のまま。スタイルガイドを遵守。` + "\n" + STYLE_GUIDE + "\n" +
+              `文字数は【厳守】${minChars}〜${maxChars}（全角）。` +
               `価格・金額・円/万円/億は禁止。禁止語：${BANNED.join("、")}`,
           },
           { role: "user", content: JSON.stringify({ text: improved, request }) },

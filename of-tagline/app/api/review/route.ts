@@ -1,4 +1,3 @@
-// app/api/review/route.ts
 export const runtime = "nodejs";
 import OpenAI from "openai";
 
@@ -9,7 +8,7 @@ function hardCapJa(s: string, max: number): string {
   const arr = Array.from(s || "");
   if (arr.length <= max) return s;
   const upto = arr.slice(0, max);
-  const enders = new Set(["。","！","？","."]);
+  const enders = new Set(["。", "！", "？", "."]);
   let cut = -1;
   for (let i = upto.length - 1; i >= 0; i--) {
     if (enders.has(upto[i])) { cut = i + 1; break; }
@@ -29,8 +28,8 @@ const stripPriceAndSpaces = (s: string) =>
     .trim();
 
 const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const stripBannedWords = (s: string) =>
-  s.replace(new RegExp(`(${BANNED.map(esc).join("|")})`, "g"), "");
+const stripWords = (s: string, words: string[]) =>
+  s.replace(new RegExp(`(${words.map(esc).join("|")})`, "g"), "");
 
 /* ---------- BAN ---------- */
 const BANNED = [
@@ -45,17 +44,17 @@ const BANNED = [
 function styleGuide(tone: string): string {
   if (tone === "親しみやすい") {
     return [
-      "文体: 親しみやすく、やわらかい丁寧語。過度なカジュアルや絵文字は使わない。感嘆記号は控えめ。",
-      "構成: ①立地・雰囲気 ②敷地/外観の印象 ③アクセス ④共用/サービス ⑤日常のシーンを想起させる結び。",
+      "文体: 親しみやすく、やわらかい丁寧語。誇張・絵文字・感嘆記号は抑制。",
+      "構成: ①立地・雰囲気 ②敷地/外観の印象 ③アクセス ④共用/サービス ⑤日常シーンを想起させる結び。",
       "語彙例: 「〜がうれしい」「〜を感じられます」「〜にも便利」「〜に寄り添う」。",
       "文長: 30〜60字中心。"
     ].join("\n");
   }
   if (tone === "一般的") {
     return [
-      "文体: 中立・説明的で読みやすい丁寧語。誇張を避け、事実ベースで記述。",
+      "文体: 中立・説明的で読みやすい丁寧語。事実ベースで誇張を避ける。",
       "構成: ①全体概要 ②規模/デザイン ③アクセス ④共用/管理 ⑤まとめ。",
-      "語彙例: 「〜に位置」「〜を採用」「〜を提供」「〜が整う」。",
+      "語彙例: 「〜に位置」「〜を採用」「〜が整う」「〜を提供」。",
       "文長: 40〜70字中心。"
     ].join("\n");
   }
@@ -65,6 +64,49 @@ function styleGuide(tone: string): string {
     "語彙例: 「〜という全体コンセプトのもと」「〜を実現」「〜に相応しい」「〜がひろがる」「〜を提供します」。",
     "文長: 40〜70字中心。体言止めは1〜2文に留める。"
   ].join("\n");
+}
+
+/** 改稿文を min〜max に収める矯正（最大3回） */
+async function ensureLengthReview(opts: {
+  openai: OpenAI; draft: string; min: number; max: number; tone: string; style: string; request?: string;
+}) {
+  let out = opts.draft;
+  for (let i = 0; i < 3; i++) {
+    const len = countJa(out);
+    if (len >= opts.min && len <= opts.max) return out;
+
+    const need = len < opts.min ? "expand" : "condense";
+    const r = await opts.openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content:
+            'Return ONLY {"improved": string}. (json)\n' +
+            `日本語・トーン:${opts.tone}。次のスタイルガイドを遵守：\n${opts.style}\n` +
+            `目的: 文字数を${opts.min}〜${opts.max}（全角）に${need === "expand" ? "増やし" : "収め"}る。\n` +
+            "事実が不足する場合は一般的で安全な叙述で補い、固有の事実を創作しない。価格/金額/円/万円・電話番号・URLは禁止。"
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            text: out,
+            request: opts.request || "",
+            action: need
+          })
+        }
+      ]
+    });
+    try {
+      out = String(JSON.parse(r.choices?.[0]?.message?.content || "{}")?.improved || out);
+    } catch { /* keep out */ }
+    out = stripPriceAndSpaces(out);
+    out = stripWords(out, BANNED);
+    if (countJa(out) > opts.max) out = hardCapJa(out, opts.max);
+  }
+  return out;
 }
 
 /* ---------- handler ---------- */
@@ -89,7 +131,7 @@ export async function POST(req: Request) {
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const STYLE_GUIDE = styleGuide(tone);
 
-    // json_object 使用の要件：「json」を含める
+    // ① 校閲/改善
     const system =
       'Return ONLY a json object like {"improved": string, "issues": string[], "summary": string}. (json)\n' +
       [
@@ -97,8 +139,7 @@ export async function POST(req: Request) {
         `トーン: ${tone}。次のスタイルガイドを遵守。`,
         STYLE_GUIDE,
         `文字数は【厳守】${minChars}〜${maxChars}（全角）。`,
-        "価格/金額/円/万円・兆/億/万などの金額表現は禁止。",
-        "電話番号・問い合わせ誘導・外部URLは書かない。",
+        "価格/金額/円/万円・電話番号・外部URLは禁止。",
         `禁止語：${BANNED.join("、")}`,
       ].join("\n");
 
@@ -111,16 +152,14 @@ export async function POST(req: Request) {
       request,
       text_original: text,
       checks: [
-        "トーンが指定スタイルに合致（誇張・感嘆の抑制）",
-        "構成の流れが概ねスタイルガイドに沿う",
+        "指定トーン・スタイルに合致",
         "マストワードが自然に含まれる",
-        "禁止語・価格/金額/円/万円・電話番号・URLがない",
-        `文字数が ${minChars}〜${maxChars} に収まる（超過時は圧縮）`,
-        "誤字脱字/不自然表現/重複表現を修正",
+        "禁止語・価格/金額・電話番号・URLなし",
+        `文字数が ${minChars}〜${maxChars} に収まる`,
+        "誤字脱字/不自然表現の修正",
       ],
     };
 
-    // ① 校閲/改善
     const r1 = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.2,
@@ -142,42 +181,25 @@ export async function POST(req: Request) {
       issues = Array.isArray(p?.issues) ? p.issues : [];
       summary = String(p?.summary ?? "");
     } catch {
-      improved = text; // パース失敗時は元文から続行
+      improved = text;
     }
 
-    // サニタイズ＆BAN除去
+    // サニタイズ
     improved = stripPriceAndSpaces(improved);
-    improved = stripBannedWords(improved);
+    improved = stripWords(improved, BANNED);
 
-    // ② レンジ外なら再圧縮（スタイル維持）
-    const len = countJa(improved);
-    if (len < minChars || len > maxChars) {
-      const r2 = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        temperature: 0.2,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content:
-              'Output ONLY {"improved": string}. (json)\n' +
-              `日本語・${tone}のまま。スタイルガイドを遵守。\n${STYLE_GUIDE}\n` +
-              `文字数は【厳守】${minChars}〜${maxChars}（全角）。` +
-              `価格・金額・円/万円/億は禁止。禁止語：${BANNED.join("、")}`,
-          },
-          { role: "user", content: JSON.stringify({ text: improved, request }) },
-        ],
-      });
-      try {
-        const raw2 = r2.choices?.[0]?.message?.content || "{}";
-        const p2 = JSON.parse(raw2);
-        improved = stripBannedWords(stripPriceAndSpaces(String(p2?.improved || improved)));
-      } catch {
-        improved = stripBannedWords(stripPriceAndSpaces(improved));
-      }
-    }
+    // ② 長さ矯正（最大3回）
+    improved = await ensureLengthReview({
+      openai,
+      draft: improved,
+      min: minChars,
+      max: maxChars,
+      tone,
+      style: STYLE_GUIDE,
+      request,
+    });
 
-    // 最終ハード上限
+    // ③ 上限は最終カット
     if (countJa(improved) > maxChars) improved = hardCapJa(improved, maxChars);
 
     return new Response(

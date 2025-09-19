@@ -60,7 +60,8 @@ function styleGuide(tone: string): string {
       "文体: 親しみやすく、やわらかい丁寧語。誇張・絵文字・感嘆記号は抑制。",
       "構成: ①立地・雰囲気 ②敷地/外観の印象 ③アクセス ④共用/サービス ⑤日常シーンを想起させる結び。",
       "語彙例: 「〜がうれしい」「〜を感じられます」「〜にも便利」「〜に寄り添う」。",
-      "文長: 30〜60字中心。"
+      "文長: 30〜60字中心。",
+      "文末は「です」「ます」で統一。不自然な文法は禁止。"
     ].join("\n");
   }
   if (tone === "一般的") {
@@ -68,14 +69,16 @@ function styleGuide(tone: string): string {
       "文体: 中立・説明的で読みやすい丁寧語。事実ベースで誇張を避ける。",
       "構成: ①全体概要 ②規模/デザイン ③アクセス ④共用/管理 ⑤まとめ。",
       "語彙例: 「〜に位置」「〜を採用」「〜が整う」「〜を提供」。",
-      "文長: 40〜70字中心。"
+      "文長: 40〜70字中心。",
+      "文末は「です」「ます」で統一。不自然な文法は禁止。"
     ].join("\n");
   }
   return [
     "文体: 上品・落ち着いた・事実ベース。過度な誇張や感嘆記号は避ける。",
     "構成: ①全体コンセプト/立地 ②敷地規模・ランドスケープ ③建築/保存・デザイン ④交通アクセス ⑤共用/サービス ⑥結び。",
     "語彙例: 「〜という全体コンセプトのもと」「〜を実現」「〜に相応しい」「〜がひろがる」「〜を提供します」。",
-    "文長: 40〜70字中心。体言止めは1〜2文に留める。"
+    "文長: 40〜70字中心。体言止めは1〜2文に留める。",
+    "文末は「です」「ます」で統一。不自然な文法は禁止。"
   ].join("\n");
 }
 
@@ -91,7 +94,7 @@ async function ensureLengthDescribe(opts: {
     const need = len < opts.min ? "expand" : "condense";
     const r = await opts.openai.chat.completions.create({
       model: "gpt-4o-mini",
-      temperature: 0.2,
+      temperature: 0.1,
       response_format: { type: "json_object" },
       messages: [
         {
@@ -120,6 +123,28 @@ async function ensureLengthDescribe(opts: {
     if (countJa(out) > opts.max) out = hardCapJa(out, opts.max);
   }
   return out;
+}
+
+/** 日本語校正ステップ */
+async function polishJapanese(openai: OpenAI, text: string, tone: string, style: string) {
+  const r = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content: 'Return ONLY {"text": string}. (json)\n' +
+          `以下の日本語を校正してください。不自然な表現や文法を直し、文末は「です」「ます」で統一。体言止めは最大2文。トーン:${tone}\n${style}`
+      },
+      { role: "user", content: JSON.stringify({ current_text: text }) }
+    ]
+  });
+  try {
+    return JSON.parse(r.choices[0].message?.content || "{}")?.text || text;
+  } catch {
+    return text;
+  }
 }
 
 /* ---------- handler ---------- */
@@ -178,7 +203,7 @@ export async function POST(req: Request) {
 
     const r1 = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      temperature: 0.2,
+      temperature: 0.1,
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: system },
@@ -207,7 +232,10 @@ export async function POST(req: Request) {
       style: STYLE_GUIDE,
     });
 
-    // ③ 上限は最終カット
+    // ③ 校正ステップ
+    text = await polishJapanese(openai, text, tone, STYLE_GUIDE);
+
+    // ④ 上限は最終カット
     if (countJa(text) > maxChars) text = hardCapJa(text, maxChars);
 
     return new Response(JSON.stringify({ text }), {
